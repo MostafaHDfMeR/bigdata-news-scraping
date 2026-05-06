@@ -89,7 +89,7 @@ with DAG(
     ),
     schedule_interval=timedelta(hours=1),
     start_date=datetime(2026, 4, 13),
-    catchup=False,
+    catchup=False,   
     tags=['bronze', 'scraping', 'batch'],
 ) as dag:
 

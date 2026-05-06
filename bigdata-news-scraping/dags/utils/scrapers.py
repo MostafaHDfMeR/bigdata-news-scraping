@@ -146,19 +146,29 @@ class BaseRSSScraper(BaseScraper):
                     link = link_tag.get_text(strip=True) if link_tag else ""
 
                     # Description / Contenu
-                    desc_tag = (
-                        item.find('description') or
-                        item.find('content:encoded') or
-                        item.find('summary')
-                    )
+                    # Recherche ultra-souple pour trouver le texte de l'article
+                    content_tags = ['content:encoded', 'content', 'description', 'summary', 'encoded']
+                    desc_tag = None
+                    for tag_name in content_tags:
+                        desc_tag = item.find(tag_name)
+                        if desc_tag and len(desc_tag.get_text(strip=True)) > 10:
+                            break
+                    
                     content = ""
                     if desc_tag:
-                        raw = desc_tag.get_text(strip=True)
-                        # Supprimer les balises HTML résiduelles
-                        content = re.sub(r'<[^>]+>', '', raw).strip()
-                        content = re.sub(r'\s+', ' ', content)
-                        # Limiter à 500 caractères
-                        content = content[:500]
+                        # Extraire le texte et gérer les blocs CDATA
+                        raw = desc_tag.get_text(separator=' ', strip=True)
+                        logger.info(f"[{self.source_name}] Balise trouvée : {desc_tag.name} | Texte : {raw[:50]}...")
+                        
+                        # Nettoyage
+                        content = re.sub(r'<[^>]+>', '', raw)
+                        try:
+                            # Décodage des entités HTML (&amp; etc)
+                            content = BeautifulSoup(content, "html.parser").get_text()
+                        except:
+                            pass
+                        content = re.sub(r'\s+', ' ', content).strip()
+                        content = content[:1000]
 
                     # Date
                     date_tag = (
@@ -169,13 +179,19 @@ class BaseRSSScraper(BaseScraper):
                     date_str = date_tag.get_text(strip=True) if date_tag else ""
 
                     # Auteur
-                    author_tag = (
-                        item.find('author') or
-                        item.find('dc:creator') or
-                        item.find('creator')
-                    )
-                    author = author_tag.get_text(strip=True) if author_tag else ""
+                    # Recherche élargie pour l'auteur (gestion des namespaces dc:creator)
+                    author_tags = ['dc:creator', 'creator', 'author', 'dc:author', 'byline']
+                    author = "Unknown"
+                    for a_tag in author_tags:
+                        found_author = item.find(a_tag)
+                        if found_author:
+                            author = found_author.get_text(strip=True)
+                            break
+                    
+                    # Nettoyage final de l'auteur (supprimer balises HTML si présentes)
                     author = re.sub(r'<[^>]+>', '', author).strip()
+                    if not author:
+                        author = "Unknown"
 
                     # Catégorie
                     cat_tag = item.find('category')
