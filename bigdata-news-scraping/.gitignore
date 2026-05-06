@@ -1,0 +1,18 @@
+# Dossier VS Code interne
+.dist
+
+# NE JAMAIS pusher
+.env
+
+# Logs Airflow — trop volumineux
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Données
+*.json
+*.parquet
+*.csv
