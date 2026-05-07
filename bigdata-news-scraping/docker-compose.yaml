@@ -1,17 +1,17 @@
-version: '3.8'
-# ─── Volumes persistants ───────────────────────────────────────────────────
+version: '3.8' 
+#Volumes persistants 
 volumes:
   postgres_airflow_db:
   postgres_dw_data:
   minio_data:
   redis_data:
 
-# ─── Réseau partagé ────────────────────────────────────────────────────────
+#Réseau partagé 
 networks:
   bigdata_net:
     driver: bridge
 
-# ─── Configuration commune Airflow ─────────────────────────────────────────
+#Configuration commune Airflow 
 x-airflow-common: &airflow-common
   build: .
   environment:
@@ -25,7 +25,7 @@ x-airflow-common: &airflow-common
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth'
     AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
     _PIP_ADDITIONAL_REQUIREMENTS: >-
-     beautifulsoup4 requests pandas pyarrow minio psycopg2-binary langdetect kafka-python lxml
+      beautifulsoup4 requests pandas pyarrow minio psycopg2-binary langdetect kafka-python lxml
     # Variables personnalisées pour le projet
     MINIO_ENDPOINT: minio:9000
     MINIO_ACCESS_KEY: minioadmin
@@ -35,6 +35,7 @@ x-airflow-common: &airflow-common
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
     - ./plugins:/opt/airflow/plugins
+    - ./kafka:/opt/airflow/kafka
   networks:
     - bigdata_net
   depends_on:
@@ -43,7 +44,7 @@ x-airflow-common: &airflow-common
 
 services:
 
-  # ─── PostgreSQL pour Airflow (métadonnées) ───────────────────────────────
+  #PostgreSQL pour Airflow (métadonnées)
   postgres_airflow:
     image: postgres:13
     container_name: postgres_airflow
@@ -61,7 +62,7 @@ services:
       retries: 5
       start_period: 5s
 
-  # ─── PostgreSQL pour le Data Warehouse ──────────────────────────────────
+  #PostgreSQL pour le Data Warehouse
   postgres_dw:
     image: postgres:13
     container_name: postgres_dw
@@ -80,7 +81,7 @@ services:
       interval: 10s
       retries: 5
 
-  # ─── Redis (broker Celery pour Airflow) ─────────────────────────────────
+  #Redis (broker Celery pour Airflow)
   redis:
     image: redis:7.2-bookworm
     container_name: redis
@@ -96,7 +97,7 @@ services:
       timeout: 30s
       retries: 50
 
-  # ─── MinIO (Data Lake S3-compatible) ────────────────────────────────────
+  #MinIO (Data Lake S3-compatible)
   minio:
     image: minio/minio:latest
     container_name: minio
@@ -117,7 +118,7 @@ services:
       timeout: 20s
       retries: 3
 
-  # ─── Zookeeper (requis par Kafka) ───────────────────────────────────────
+  #Zookeeper (requis par Kafka)
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     container_name: zookeeper
@@ -127,7 +128,7 @@ services:
     networks:
       - bigdata_net
     
-  # ─── Apache Kafka (streaming) ───────────────────────────────────────────
+  #Apache Kafka (streaming)
   kafka:
     image: confluentinc/cp-kafka:7.4.0
     container_name: kafka
@@ -144,8 +145,34 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
     networks:
       - bigdata_net
-  
-  # ─── Airflow Init ────────────────────────────────────────────────────────
+  #Kafka (consumer)
+  kafka-consumer:
+   build: .
+   container_name: kafka_consumer
+   command: python kafka/consumer.py
+   volumes:
+      - ./kafka:/opt/airflow/kafka
+      - ./dags:/opt/airflow/dags
+   depends_on:
+     - kafka
+     - minio
+   networks:
+     - bigdata_net
+
+  #Kafdrop (interface web pour Kafka)
+  kafdrop:
+    image: obsidiandynamics/kafdrop
+    container_name: kafdrop
+    ports:
+      - "9200:9000"   # évite conflit avec MinIO
+    environment:
+      KAFKA_BROKERCONNECT: kafka:29092
+    depends_on:
+      - kafka
+    networks:
+      - bigdata_net
+
+  #Airflow Init
   airflow-init:
     <<: *airflow-common
     container_name: airflow_init
@@ -163,7 +190,7 @@ services:
           --email admin@example.com
     restart: on-failure
 
-  # ─── Airflow Webserver ───────────────────────────────────────────────────
+  #Airflow Webserver
   airflow-webserver:
     <<: *airflow-common
     container_name: airflow_webserver
@@ -178,14 +205,14 @@ services:
       start_period: 30s
     restart: always
 
-  # ─── Airflow Scheduler ───────────────────────────────────────────────────
+  #Airflow Scheduler
   airflow-scheduler:
     <<: *airflow-common
     container_name: airflow_scheduler
     command: scheduler
     restart: always
 
-  # ─── Airflow Worker (Celery) ─────────────────────────────────────────────
+  #Airflow Worker (Celery)
   airflow-worker:
     <<: *airflow-common
     container_name: airflow_worker

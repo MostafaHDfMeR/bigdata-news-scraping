@@ -1,7 +1,9 @@
-'''
-#Sources : CNN, BBC News, Hesport, Al Jazeera, NBC News, Reuters, Morocco World News
-#Couche  : Bronze (données brutes)
-'''
+"""
+scrapers.py — Scripts de scraping pour le projet "bigdata-news-scraping"
+Sources RSS  : The Guardian, Le Monde, RFI Francais, Hespress RSS
+Sources HTML : BBC News, Al Jazeera, Euronews
+Couche       : Bronze (données brutes)
+"""
 
 import requests
 from bs4 import BeautifulSoup
@@ -12,18 +14,15 @@ import time
 
 logger = logging.getLogger(__name__)
 
+
 # CLASSE DE BASE
 
 class BaseScraper:
-    """
-    Classe parent partagée par tous les scrapers.
-    Contient les méthodes communes : fetch_page, build_article, scrape_articles.
-    """
+    """Classe parent partagée par tous les scrapers."""
 
     def __init__(self, source_name: str, base_url: str):
         self.source_name = source_name
         self.base_url = base_url
-        # Simuler un vrai navigateur Chrome pour éviter d'être bloqué
         self.headers = {
             'User-Agent': (
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -37,14 +36,11 @@ class BaseScraper:
         }
 
     def fetch_page(self, url: str) -> str | None:
-        """
-        Télécharger une page web avec gestion complète des erreurs.
-        Retourne le HTML sous forme de texte, ou None si échec.
-        """
+        """Télécharger une page web ou un flux RSS."""
         try:
-            response = requests.get(url, headers=self.headers, timeout=20)
+            response = requests.get(url, headers=self.headers, timeout=15)
             response.encoding = 'utf-8'
-            response.raise_for_status()  # Erreur si status 4xx ou 5xx
+            response.raise_for_status()
             return response.text
         except requests.exceptions.Timeout:
             logger.error(f"[{self.source_name}] TIMEOUT : {url}")
@@ -56,15 +52,12 @@ class BaseScraper:
             logger.error(f"[{self.source_name}] ERREUR HTTP {e} : {url}")
             return None
         except Exception as e:
-            logger.error(f"[{self.source_name}] ERREUR INATTENDUE : {e}")
+            logger.error(f"[{self.source_name}] ERREUR : {e}")
             return None
 
     def build_article(self, title: str, url: str, category: str = "General",
                       author: str = "", content: str = "", date_str: str = "") -> dict:
-        """
-        Construire un objet article standardisé.
-        Toutes les sources produisent le même format → facile à traiter en Silver.
-        """
+        """Construire un objet article standardisé."""
         return {
             'title':            title.strip() if title else "Sans titre",
             'url':              url.strip() if url else "",
@@ -74,549 +67,371 @@ class BaseScraper:
             'content':          content.strip() if content else "",
             'source':           self.source_name,
             'scraped_at':       datetime.now().isoformat(),
-            'language':         '',  # Sera détecté automatiquement en couche Silver
+            'language':         '',
         }
 
     def scrape_articles(self) -> list[dict]:
-        """
-        Méthode obligatoire à implémenter dans chaque sous-classe.
-        Si oubliée → erreur claire au lieu d'un comportement inattendu.
-        """
         raise NotImplementedError(
-            f"[{self.source_name}] La méthode scrape_articles() doit être implémentée."
+            f"[{self.source_name}] scrape_articles() doit être implémentée."
         )
 
-# CNN
 
-class CNNScraper(BaseScraper):
-   
-    def __init__(self):
-        super().__init__('cnn', 'https://www.cnn.com')
+# CLASSE DE BASE RSS
+# Partagée par tous les scrapers RSS (Guardian, France24, Arab News)
 
-    def scrape_articles(self) -> list[dict]:
-        logger.info(f"[CNN] Début du scraping...")
-        html = self.fetch_page(self.base_url)
-        if not html:
-            logger.warning("[CNN] Page principale inaccessible.")
-            return []
+class BaseRSSScraper(BaseScraper):
+    """
+    Classe parent pour les scrapers basés sur les flux RSS.
 
-        soup = BeautifulSoup(html, 'html.parser')
+    STRUCTURE D'UN FLUX RSS :
+    <rss>
+      <channel>
+        <item>
+          <title>Titre de l'article</title>
+          <link>https://...</link>
+          <description>Résumé...</description>
+          <pubDate>Thu, 24 Apr 2026 14:00:00 GMT</pubDate>
+          <author>Nom auteur</author>
+          <category>Catégorie</category>
+        </item>
+      </channel>
+    </rss>
+    """
+
+    def __init__(self, source_name: str, rss_url: str):
+        super().__init__(source_name, rss_url)
+        # Headers adaptés pour les flux RSS
+        self.headers['Accept'] = 'application/rss+xml, application/xml, text/xml, */*'
+
+    def parse_rss(self, xml_content: str) -> list[dict]:
+        """
+        Parser un flux RSS et retourner une liste d'articles.
+        Fonctionne avec tous les flux RSS standard.
+        """
         articles = []
 
-        # CNN utilise des containers avec data-component-name
-        cards = soup.find_all('div', attrs={'data-component-name': re.compile('card')})
+        try:
+            # Parser le XML avec BeautifulSoup
+            # 'xml' parser ou 'lxml-xml' pour les flux RSS
+            soup = BeautifulSoup(xml_content, 'xml')
 
-        # Fallback 1 : chercher les liens avec classe contenant 'container'
-        if not cards:
-            cards = soup.find_all('div', class_=re.compile(r'container__item|card'))
+            # Si 'xml' parser non disponible, on utilisent 'html.parser'
+            if not soup.find('item'):
+                soup = BeautifulSoup(xml_content, 'html.parser')
 
-        # Fallback 2 : balises article génériques
-        if not cards:
-            cards = soup.find_all('article')
+            # Trouver tous les éléments <item> du flux RSS
+            items = soup.find_all('item')
 
-        logger.info(f"[CNN] {len(cards)} éléments trouvés.")
+            if not items:
+                logger.warning(f"[{self.source_name}] Aucun item trouvé dans le RSS.")
+                return []
 
-        for card in cards[:15]:
-            try:
-                # Titre
-                title_tag = (
-                    card.find('span', class_=re.compile(r'container__headline|card__headline')) or
-                    card.find('h2') or
-                    card.find('h3') or
-                    card.find('a')
-                )
-                if not title_tag:
+            logger.info(f"[{self.source_name}] {len(items)} items RSS trouvés.")
+
+            for item in items[:10]:
+                try:
+                    # Titre
+                    title_tag = item.find('title')
+                    title = title_tag.get_text(strip=True) if title_tag else ""
+                    # Nettoyage des entités HTML dans le titre
+                    title = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', title)
+                    if len(title) < 5:
+                        continue
+
+                    # URL
+                    link_tag = item.find('link')
+                    if not link_tag or not link_tag.get_text(strip=True):
+                        # Certains RSS utilisent <guid> pour l'URL
+                        link_tag = item.find('guid')
+                    link = link_tag.get_text(strip=True) if link_tag else ""
+
+                    # Description / Contenu
+                    desc_tag = (
+                        item.find('description') or
+                        item.find('content:encoded') or
+                        item.find('summary')
+                    )
+                    content = ""
+                    if desc_tag:
+                        raw = desc_tag.get_text(strip=True)
+                        # Supprimer les balises HTML résiduelles
+                        content = re.sub(r'<[^>]+>', '', raw).strip()
+                        content = re.sub(r'\s+', ' ', content)
+                        # Limiter à 500 caractères
+                        content = content[:500]
+
+                    # Date
+                    date_tag = (
+                        item.find('pubDate') or
+                        item.find('published') or
+                        item.find('dc:date')
+                    )
+                    date_str = date_tag.get_text(strip=True) if date_tag else ""
+
+                    # Auteur
+                    author_tag = (
+                        item.find('author') or
+                        item.find('dc:creator') or
+                        item.find('creator')
+                    )
+                    author = author_tag.get_text(strip=True) if author_tag else ""
+                    author = re.sub(r'<[^>]+>', '', author).strip()
+
+                    # Catégorie
+                    cat_tag = item.find('category')
+                    category = cat_tag.get_text(strip=True) if cat_tag else "General"
+                    category = re.sub(r'<!\[CDATA\[(.*?)\]\]>', r'\1', category)
+
+                    article = self.build_article(
+                        title, link, category,
+                        author=author, content=content, date_str=date_str
+                    )
+                    articles.append(article)
+
+                except Exception as e:
+                    logger.warning(f"[{self.source_name}] Erreur parsing item : {e}")
                     continue
-                title = title_tag.get_text(strip=True)
-                if len(title) < 10:
-                    continue
 
-                # URL
-                link_tag = card.find('a', href=True)
-                link = link_tag['href'] if link_tag else ""
-                if link and not link.startswith('http'):
-                    link = 'https://www.cnn.com' + link
+        except Exception as e:
+            logger.error(f"[{self.source_name}] Erreur parsing RSS : {e}")
 
-                # Catégorie
-                cat_tag = card.find('span', class_=re.compile(r'eyebrow|category|label'))
-                category = cat_tag.get_text(strip=True) if cat_tag else "News"
-
-                article = self.build_article(title, link, category)
-                articles.append(article)
-                time.sleep(0.3)
-
-            except Exception as e:
-                logger.warning(f"[CNN] Erreur parsing : {e}")
-                continue
-
-        logger.info(f"[CNN] {len(articles)} articles collectés.")
         return articles
 
-# BBC NEWS
-
-class BBCScraper(BaseScraper):
-    
-    def __init__(self):
-        super().__init__('bbc_news', 'https://www.bbc.com/news')
-
     def scrape_articles(self) -> list[dict]:
-        logger.info(f"[BBC News] Début du scraping...")
-        html = self.fetch_page(self.base_url)
-        if not html:
-            logger.warning("[BBC News] Page principale inaccessible.")
+        """Télécharger et parser le flux RSS."""
+        logger.info(f"[{self.source_name}] Scraping RSS : {self.base_url}")
+        xml_content = self.fetch_page(self.base_url)
+        if not xml_content:
+            logger.warning(f"[{self.source_name}] Flux RSS inaccessible.")
             return []
 
-        soup = BeautifulSoup(html, 'html.parser')
-        articles = []
+        articles = self.parse_rss(xml_content)
+        logger.info(f"[{self.source_name}] {len(articles)} articles collectés via RSS.")
+        return articles
 
-        # BBC utilise des data-testid pour identifier les cards
-        cards = soup.find_all('div', attrs={'data-testid': re.compile(r'card|article')})
 
-        # Fallback 1 : chercher les liens d'articles
-        if not cards:
-            cards = soup.find_all('li', attrs={'data-testid': re.compile(r'card')})
+# SCRAPER 1 : THE GUARDIAN (RSS)
 
-        # Fallback 2 : balises article
-        if not cards:
-            cards = soup.find_all('article')
+class TheGuardianScraper(BaseRSSScraper):
+    """
+    Scraper pour The Guardian — actualités internationales en anglais.
+    URL RSS : https://www.theguardian.com/world/rss
+    Langue  : Anglais
+    Pourquoi : RSS fiable, pas de JavaScript, contenu riche
+    """
 
-        logger.info(f"[BBC News] {len(cards)} éléments trouvés.")
+    def __init__(self):
+        super().__init__(
+            'the_guardian',
+            'https://www.theguardian.com/world/rss'
+        )
 
-        for card in cards[:15]:
-            try:
-                # Titre
-                title_tag = (
-                    card.find('h3', attrs={'data-testid': 'card-headline'}) or
-                    card.find('h2') or
-                    card.find('h3') or
-                    card.find('h4')
-                )
-                if not title_tag:
-                    continue
-                title = title_tag.get_text(strip=True)
-                if len(title) < 10:
-                    continue
+    def scrape_articles(self) -> list[dict]:
+        logger.info("[The Guardian] Scraping RSS en cours...")
+        xml_content = self.fetch_page(self.base_url)
+        if not xml_content:
+            # Fallback : essayer la section News
+            logger.warning("[The Guardian] Flux World inaccessible, essai News...")
+            xml_content = self.fetch_page('https://www.theguardian.com/news/rss')
+            if not xml_content:
+                return []
 
-                # URL
-                link_tag = card.find('a', href=True)
-                link = link_tag['href'] if link_tag else ""
-                if link and not link.startswith('http'):
-                    link = 'https://www.bbc.com' + link
+        articles = self.parse_rss(xml_content)
+        logger.info(f"[The Guardian] {len(articles)} articles collectés.")
+        return articles
 
-                # Description courte
-                desc_tag = card.find('p', attrs={'data-testid': 'card-description'})
-                content = desc_tag.get_text(strip=True) if desc_tag else ""
 
-                # Date
-                time_tag = card.find('time')
-                date_str = time_tag.get('datetime', '') if time_tag else ""
+# SCRAPER 2 : BBC NEWS (RSS)
+# Le méme source amélioré avec RSS
 
-                article = self.build_article(title, link, "News", content=content, date_str=date_str)
-                articles.append(article)
-                time.sleep(0.3)
+class BBCScraper(BaseRSSScraper):
+    """
+    Scraper pour BBC News — actualités internationales en anglais.
+    URL RSS : http://feeds.bbci.co.uk/news/rss.xml
+    Langue  : Anglais
+    Pourquoi : RSS officiel BBC, très fiable
+    """
 
-            except Exception as e:
-                logger.warning(f"[BBC News] Erreur parsing : {e}")
-                continue
+    def __init__(self):
+        super().__init__(
+            'bbc_news',
+            'http://feeds.bbci.co.uk/news/rss.xml'
+        )
 
+    def scrape_articles(self) -> list[dict]:
+        logger.info("[BBC News] Scraping RSS en cours...")
+        xml_content = self.fetch_page(self.base_url)
+        if not xml_content:
+            # Fallback : essayer l'URL alternative
+            logger.warning("[BBC News] RSS principal inaccessible, essai alternatif...")
+            xml_content = self.fetch_page('https://feeds.bbci.co.uk/news/world/rss.xml')
+            if not xml_content:
+                return []
+
+        articles = self.parse_rss(xml_content)
         logger.info(f"[BBC News] {len(articles)} articles collectés.")
         return articles
 
-# SCRAPER 3 : HESPORT
 
-class HesportScraper(BaseScraper):
+# SCRAPER 3 : LE MONDE (RSS)
 
+class LeMondeScraper(BaseRSSScraper):
+    """
+    Le Monde — actualités françaises et internationales.
+    URL RSS : https://www.lemonde.fr/rss/une.xml
+    Langue  : Français
+    """
     def __init__(self):
-        super().__init__('hesport', 'https://www.hesport.com')
+        super().__init__(
+            'le_monde',
+            'https://www.lemonde.fr/rss/une.xml'
+        )
 
     def scrape_articles(self) -> list[dict]:
-        logger.info(f"[Hesport] Début du scraping...")
-        html = self.fetch_page(self.base_url)
-        if not html:
-            logger.warning("[Hesport] Page principale inaccessible.")
+        logger.info("[Le Monde] Scraping RSS...")
+        xml_content = self.fetch_page(self.base_url)
+        if not xml_content:
             return []
-
-        soup = BeautifulSoup(html, 'html.parser')
-        articles = []
-
-        # Hesport utilise des cards avec classe 'post' ou 'article'
-        cards = soup.find_all('div', class_=re.compile(r'post|article|card|item'))
-
-        # Fallback : balises article
-        if not cards:
-            cards = soup.find_all('article')
-
-        # Fallback 2 : listes d'articles
-        if not cards:
-            cards = soup.find_all('li', class_=re.compile(r'post|item|article'))
-
-        logger.info(f"[Hesport] {len(cards)} éléments trouvés.")
-
-        for card in cards[:15]:
-            try:
-                # Titre
-                title_tag = (
-                    card.find('h2') or
-                    card.find('h3') or
-                    card.find('h4') or
-                    card.find('a', class_=re.compile(r'title|heading'))
-                )
-                if not title_tag:
-                    continue
-                title = title_tag.get_text(strip=True)
-                if len(title) < 5:
-                    continue
-
-                # URL
-                link_tag = card.find('a', href=True)
-                link = link_tag['href'] if link_tag else ""
-                if link and not link.startswith('http'):
-                    link = self.base_url + link
-
-                # Catégorie sportive
-                cat_tag = card.find('span', class_=re.compile(r'cat|category|tag'))
-                category = cat_tag.get_text(strip=True) if cat_tag else "Sport"
-
-                # Date
-                date_tag = card.find('time') or card.find('span', class_=re.compile(r'date|time'))
-                date_str = ""
-                if date_tag:
-                    date_str = date_tag.get('datetime', '') or date_tag.get_text(strip=True)
-
-                article = self.build_article(title, link, category, date_str=date_str)
-                articles.append(article)
-                time.sleep(0.2)
-
-            except Exception as e:
-                logger.warning(f"[Hesport] Erreur parsing : {e}")
-                continue
-
-        logger.info(f"[Hesport] {len(articles)} articles collectés.")
+        articles = self.parse_rss(xml_content)
+        logger.info(f"[Le Monde] {len(articles)} articles collectés.")
         return articles
 
-# SCRAPER 4 : AL JAZEERA
 
-class AlJazeeraScraper(BaseScraper):
+# SCRAPER 4 : AL JAZEERA (RSS)
+# Le méme source amélioré avec RSS
+
+class AlJazeeraScraper(BaseRSSScraper):
+    """
+    Scraper pour Al Jazeera English — actualités internationales en anglais.
+    URL RSS : https://www.aljazeera.com/xml/rss/all.xml
+    Langue  : Anglais
+    Pourquoi : RSS officiel Al Jazeera, très fiable
+    """
 
     def __init__(self):
-        super().__init__('aljazeera', 'https://www.aljazeera.com')
+        super().__init__(
+            'aljazeera',
+            'https://www.aljazeera.com/xml/rss/all.xml'
+        )
 
     def scrape_articles(self) -> list[dict]:
-        logger.info(f"[Al Jazeera] Début du scraping...")
-        html = self.fetch_page(self.base_url)
-        if not html:
-            logger.warning("[Al Jazeera] Page principale inaccessible.")
+        logger.info("[Al Jazeera] Scraping RSS en cours...")
+        xml_content = self.fetch_page(self.base_url)
+        if not xml_content:
+            logger.warning("[Al Jazeera] RSS inaccessible.")
             return []
 
-        soup = BeautifulSoup(html, 'html.parser')
-        articles = []
-
-        # Al Jazeera utilise des classes spécifiques pour ses articles
-        cards = soup.find_all('article', class_=re.compile(r'article-card|teaser'))
-
-        # Fallback 1 : div avec classe article
-        if not cards:
-            cards = soup.find_all('div', class_=re.compile(r'article-card|featured-articles'))
-
-        # Fallback 2 : balises article génériques
-        if not cards:
-            cards = soup.find_all('article')
-
-        logger.info(f"[Al Jazeera] {len(cards)} éléments trouvés.")
-
-        for card in cards[:15]:
-            try:
-                # Titre
-                title_tag = (
-                    card.find('h3', class_=re.compile(r'article-card__title|heading')) or
-                    card.find('h2') or
-                    card.find('h3') or
-                    card.find('h4')
-                )
-                if not title_tag:
-                    continue
-                title = title_tag.get_text(strip=True)
-                if len(title) < 10:
-                    continue
-
-                # URL
-                link_tag = card.find('a', href=True)
-                link = link_tag['href'] if link_tag else ""
-                if link and not link.startswith('http'):
-                    link = 'https://www.aljazeera.com' + link
-
-                # Catégorie
-                cat_tag = card.find('span', class_=re.compile(r'article-card__category|section'))
-                category = cat_tag.get_text(strip=True) if cat_tag else "World News"
-
-                # Date
-                time_tag = card.find('time')
-                date_str = time_tag.get('datetime', '') if time_tag else ""
-
-                # Description
-                desc_tag = card.find('p', class_=re.compile(r'article-card__summary|description'))
-                content = desc_tag.get_text(strip=True) if desc_tag else ""
-
-                article = self.build_article(title, link, category, content=content, date_str=date_str)
-                articles.append(article)
-                time.sleep(0.3)
-
-            except Exception as e:
-                logger.warning(f"[Al Jazeera] Erreur parsing : {e}")
-                continue
-
+        articles = self.parse_rss(xml_content)
         logger.info(f"[Al Jazeera] {len(articles)} articles collectés.")
         return articles
 
-# NBC NEWS
 
-class NBCNewsScraper(BaseScraper):
+# SCRAPER 5 : RFI FRANCAIS (RSS)
 
+class RFIScraper(BaseRSSScraper):
+    """
+    RFI — Radio France Internationale.
+    URL RSS : https://www.rfi.fr/fr/rss
+    Langue  : Français
+    """
     def __init__(self):
-        super().__init__('nbc_news', 'https://www.nbcnews.com')
+        super().__init__(
+            'rfi',
+            'https://www.rfi.fr/fr/rss'
+        )
 
     def scrape_articles(self) -> list[dict]:
-        logger.info(f"[NBC News] Début du scraping...")
-        html = self.fetch_page(self.base_url)
-        if not html:
-            logger.warning("[NBC News] Page principale inaccessible.")
-            return []
-
-        soup = BeautifulSoup(html, 'html.parser')
-        articles = []
-
-        # NBC News utilise des divs avec classe 'wide-card' ou 'tease-card'
-        cards = soup.find_all('div', class_=re.compile(r'wide-card|tease-card|story-card'))
-
-        # Fallback 1 : balises article
-        if not cards:
-            cards = soup.find_all('article')
-
-        # Fallback 2 : sections avec titre
-        if not cards:
-            cards = soup.find_all('div', class_=re.compile(r'card|story|article'))
-
-        logger.info(f"[NBC News] {len(cards)} éléments trouvés.")
-
-        for card in cards[:15]:
-            try:
-                # Titre
-                title_tag = (
-                    card.find('h2', class_=re.compile(r'title|headline')) or
-                    card.find('h3', class_=re.compile(r'title|headline')) or
-                    card.find('h2') or
-                    card.find('h3')
-                )
-                if not title_tag:
-                    continue
-                title = title_tag.get_text(strip=True)
-                if len(title) < 10:
-                    continue
-
-                # URL
-                link_tag = card.find('a', href=True)
-                link = link_tag['href'] if link_tag else ""
-                if link and not link.startswith('http'):
-                    link = 'https://www.nbcnews.com' + link
-
-                # Catégorie
-                cat_tag = card.find('span', class_=re.compile(r'unibrow|category|label'))
-                category = cat_tag.get_text(strip=True) if cat_tag else "News"
-
-                # Description
-                desc_tag = card.find('p', class_=re.compile(r'description|summary|dek'))
-                content = desc_tag.get_text(strip=True) if desc_tag else ""
-
-                # Auteur
-                author_tag = card.find('span', class_=re.compile(r'byline|author'))
-                author = author_tag.get_text(strip=True) if author_tag else ""
-
-                article = self.build_article(title, link, category, author=author, content=content)
-                articles.append(article)
-                time.sleep(0.3)
-
-            except Exception as e:
-                logger.warning(f"[NBC News] Erreur parsing : {e}")
-                continue
-
-        logger.info(f"[NBC News] {len(articles)} articles collectés.")
+        logger.info("[RFI] Scraping RSS...")
+        xml_content = self.fetch_page(self.base_url)
+        if not xml_content:
+            # Fallback
+            xml_content = self.fetch_page(
+                'https://www.rfi.fr/fr/podcasts/journal-en-francais-facile/rss'
+            )
+            if not xml_content:
+                return []
+        articles = self.parse_rss(xml_content)
+        logger.info(f"[RFI] {len(articles)} articles collectés.")
         return articles
 
-# SCRAPER 6 : REUTERS
 
-class ReutersScraper(BaseScraper):
+# SCRAPER 6 : HESPRESS (RSS)
 
+class HespressRSSScraper(BaseRSSScraper):
+    """
+    Hespress — flux RSS officiel.
+    URL RSS : https://fr.hespress.com/feed/
+    Langue  : Français + Arabe
+    """
     def __init__(self):
-        super().__init__('reuters', 'https://www.reuters.com')
+        super().__init__(
+            'hespress',
+            'https://fr.hespress.com/feed/'
+        )
 
     def scrape_articles(self) -> list[dict]:
-        logger.info(f"[Reuters] Début du scraping...")
-        html = self.fetch_page(self.base_url)
-        if not html:
-            logger.warning("[Reuters] Page principale inaccessible.")
-            return []
-
-        soup = BeautifulSoup(html, 'html.parser')
-        articles = []
-
-        # Reuters utilise des attributs data-testid
-        cards = soup.find_all('li', attrs={'data-testid': re.compile(r'story-item|article')})
-
-        # Fallback 1 : divs avec attributs data
-        if not cards:
-            cards = soup.find_all('div', attrs={'data-testid': re.compile(r'story|article|card')})
-
-        # Fallback 2 : balises article
-        if not cards:
-            cards = soup.find_all('article')
-
-        # Fallback 3 : divs avec classe media-story
-        if not cards:
-            cards = soup.find_all('div', class_=re.compile(r'story|article|media'))
-
-        logger.info(f"[Reuters] {len(cards)} éléments trouvés.")
-
-        for card in cards[:15]:
-            try:
-                # Titre
-                title_tag = (
-                    card.find('a', attrs={'data-testid': 'Heading'}) or
-                    card.find('h3', attrs={'data-testid': re.compile(r'heading|title')}) or
-                    card.find('h2') or
-                    card.find('h3')
-                )
-                if not title_tag:
-                    continue
-                title = title_tag.get_text(strip=True)
-                if len(title) < 10:
-                    continue
-
-                # URL
-                link_tag = card.find('a', href=True)
-                link = link_tag['href'] if link_tag else ""
-                if link and not link.startswith('http'):
-                    link = 'https://www.reuters.com' + link
-
-                # Catégorie
-                cat_tag = card.find('span', attrs={'data-testid': re.compile(r'category|label')})
-                if not cat_tag:
-                    cat_tag = card.find('a', class_=re.compile(r'category|section'))
-                category = cat_tag.get_text(strip=True) if cat_tag else "World"
-
-                # Date
-                time_tag = card.find('time')
-                date_str = time_tag.get('datetime', '') if time_tag else ""
-
-                # Description
-                desc_tag = card.find('p', attrs={'data-testid': re.compile(r'body|description')})
-                content = desc_tag.get_text(strip=True) if desc_tag else ""
-
-                article = self.build_article(title, link, category, content=content, date_str=date_str)
-                articles.append(article)
-                time.sleep(0.3)
-
-            except Exception as e:
-                logger.warning(f"[Reuters] Erreur parsing : {e}")
-                continue
-
-        logger.info(f"[Reuters] {len(articles)} articles collectés.")
+        logger.info("[Hespress RSS] Scraping RSS...")
+        xml_content = self.fetch_page(self.base_url)
+        if not xml_content:
+            # Fallback : version arabe
+            xml_content = self.fetch_page('https://hespress.com/feed/')
+            if not xml_content:
+                return []
+        articles = self.parse_rss(xml_content)
+        logger.info(f"[Hespress] {len(articles)} articles collectés.")
         return articles
 
-# SCRAPER 7 : MOROCCO WORLD NEWS
 
-class MoroccoWorldNewsScraper(BaseScraper):
+# SCRAPER 7 : EURONEWS (RSS)
 
+class EuronewsScraper(BaseRSSScraper):
+    """
+    Euronews France — actualités européennes en français.
+    URL RSS : https://feeds.feedburner.com/euronews/fr/home
+    Langue  : Français
+    """
     def __init__(self):
-        super().__init__('morocco_world_news', 'https://www.moroccoworldnews.com')
+        super().__init__(
+            'euronews',
+            'https://feeds.feedburner.com/euronews/fr/home'
+        )
 
     def scrape_articles(self) -> list[dict]:
-        logger.info(f"[Morocco World News] Début du scraping...")
-        html = self.fetch_page(self.base_url)
-        if not html:
-            logger.warning("[Morocco World News] Page principale inaccessible.")
-            return []
-
-        soup = BeautifulSoup(html, 'html.parser')
-        articles = []
-
-        # Morocco World News utilise WordPress — structure classique
-        cards = soup.find_all('article', class_=re.compile(r'post|article|entry'))
-
-        # Fallback 1 : divs avec classe post
-        if not cards:
-            cards = soup.find_all('div', class_=re.compile(r'post|article|card|entry'))
-
-        # Fallback 2 : balises article génériques
-        if not cards:
-            cards = soup.find_all('article')
-
-        logger.info(f"[Morocco World News] {len(cards)} éléments trouvés.")
-
-        for card in cards[:15]:
-            try:
-                # Titre — WordPress utilise entry-title
-                title_tag = (
-                    card.find('h2', class_=re.compile(r'entry-title|post-title')) or
-                    card.find('h3', class_=re.compile(r'entry-title|post-title')) or
-                    card.find('h2') or
-                    card.find('h3')
-                )
-                if not title_tag:
-                    continue
-                title = title_tag.get_text(strip=True)
-                if len(title) < 10:
-                    continue
-
-                # URL
-                link_tag = title_tag.find('a', href=True) or card.find('a', href=True)
-                link = link_tag['href'] if link_tag else ""
-                if link and not link.startswith('http'):
-                    link = self.base_url + link
-
-                # Catégorie — WordPress utilise cat-links
-                cat_tag = card.find('span', class_=re.compile(r'cat|category|section'))
-                if not cat_tag:
-                    cat_tag = card.find('a', rel='category tag')
-                category = cat_tag.get_text(strip=True) if cat_tag else "Morocco"
-
-                # Date — WordPress utilise entry-date
-                date_tag = card.find('time', class_=re.compile(r'entry-date|published'))
-                date_str = ""
-                if date_tag:
-                    date_str = date_tag.get('datetime', '') or date_tag.get_text(strip=True)
-
-                # Auteur — WordPress utilise author vcard
-                author_tag = card.find('span', class_=re.compile(r'author|byline'))
-                author = author_tag.get_text(strip=True) if author_tag else ""
-
-                # Description
-                desc_tag = card.find('div', class_=re.compile(r'entry-summary|excerpt'))
-                content = desc_tag.get_text(strip=True) if desc_tag else ""
-
-                article = self.build_article(
-                    title, link, category,
-                    author=author, content=content, date_str=date_str
-                )
-                articles.append(article)
-                time.sleep(0.2)
-
-            except Exception as e:
-                logger.warning(f"[Morocco World News] Erreur parsing : {e}")
-                continue
-
-        logger.info(f"[Morocco World News] {len(articles)} articles collectés.")
+        logger.info("[Euronews] Scraping RSS...")
+        xml_content = self.fetch_page(self.base_url)
+        if not xml_content:
+            # Fallback
+            xml_content = self.fetch_page(
+                'https://www.euronews.com/rss'
+            )
+            if not xml_content:
+                return []
+        articles = self.parse_rss(xml_content)
+        logger.info(f"[Euronews] {len(articles)} articles collectés.")
         return articles
+
 
 # FONCTION UTILITAIRE
 
 def get_all_scrapers() -> list:
+    """
+    Retourner la liste de tous les scrapers disponibles.
 
+        TheGuardianScraper  -> the_guardian
+        BBCScraper          -> bbc_news
+        LeMondeScraper     -> le_monde (RSS)
+        AlJazeeraScraper    -> aljazeera
+        RFIScraper          -> rfi_francais (RSS)
+        EuronewsScraper     -> euronews (RSS)
+    (site marocain simple) :
+        HespressRSSScraper     -> hespress (RSS)
+    """
     return [
-        CNNScraper(),
+        TheGuardianScraper(),
         BBCScraper(),
-        HesportScraper(),
+        LeMondeScraper(),
         AlJazeeraScraper(),
-        NBCNewsScraper(),
-        ReutersScraper(),
-        MoroccoWorldNewsScraper(),
+        RFIScraper(),
+        HespressRSSScraper(),
+        EuronewsScraper(),
     ]

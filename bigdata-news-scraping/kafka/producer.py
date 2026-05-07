@@ -1,6 +1,6 @@
 """
 Producteur Kafka : Ingestion Streaming
-Sources  : CNN, BBC News, Hesport, Al Jazeera, NBC News, Reuters, Morocco World News
+Sources  : The Guardian, BBC News, Hespress, Al Jazeera, Euronews, Le Monde, RFI
 Couche   : Bronze (streaming en temps réel)
 Usage    : python kafka/producer.py
 
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # Adresse du broker Kafka
 # - Depuis mon PC local       → 'localhost:9092'
 # - Depuis un conteneur Docker → 'kafka:29092'
-KAFKA_BOOTSTRAP_SERVERS = ['localhost:9092']
+KAFKA_BOOTSTRAP_SERVERS = ['kafka:29092']
 
 # Nom du topic Kafka où seront envoyés les articles
 TOPIC_NAME = 'news_articles'
@@ -48,13 +48,13 @@ DELAY_BETWEEN_CYCLES = 300
 # Sources à scraper en streaming
 # Tu peux commenter certaines sources pour les désactiver
 STREAMING_SOURCES = [
-    'cnn',
+    'the_guardian',
     'bbc_news',
-    'hesport',
+    'hespress',
     'aljazeera',
-    'nbc_news',
-    'reuters',
-    'morocco_world_news',
+    'euronews',
+    'le_monde',
+    'rfi',
 ]
 
 # CONNEXION KAFKA
@@ -127,24 +127,24 @@ def get_scrapers_for_streaming() -> list:
     Retourne seulement les scrapers dont la source est dans STREAMING_SOURCES.
     """
     from utils.scrapers import (
-        CNNScraper,
+        TheGuardianScraper,
         BBCScraper,
-        HesportScraper,
+        HespressRSSScraper,
         AlJazeeraScraper,
-        NBCNewsScraper,
-        ReutersScraper,
-        MoroccoWorldNewsScraper,
+        EuronewsScraper,
+        LeMondeScraper,
+        RFIScraper,
     )
 
     # Mapping source_name → classe scraper
     all_scrapers = {
-        'cnn':                CNNScraper(),
+        'the_guardian':       TheGuardianScraper(),
         'bbc_news':           BBCScraper(),
-        'hesport':            HesportScraper(),
+        'hespress':           HespressRSSScraper(),
         'aljazeera':          AlJazeeraScraper(),
-        'nbc_news':           NBCNewsScraper(),
-        'reuters':            ReutersScraper(),
-        'morocco_world_news': MoroccoWorldNewsScraper(),
+        'euronews':           EuronewsScraper(),
+        'le_monde':           LeMondeScraper(),
+        'rfi':                RFIScraper(),
     }
 
     # Retourner seulement les sources activées dans STREAMING_SOURCES
@@ -165,10 +165,10 @@ def send_article(producer: KafkaProducer, article: dict) -> bool:
     """
     Envoyer un seul article vers le topic Kafka.
     La clé du message = "source_hashUrl"
-    Exemple : "cnn_-4823947293847"
+    Exemple : "the_guardian-4823947293847"
     Pourquoi une clé ?
     Kafka utilise la clé pour router le message vers la bonne partition.
-    Tous les articles CNN vont dans la même partition → ordre garanti.
+    Tous les articles The guardian vont dans la même partition → ordre garanti.
     """
     try:
         # Construction d'une clé unique pour l'article
@@ -197,9 +197,9 @@ def stream_all_sources():
     """
     Boucle principale du streaming.
     Flux :
-    CNN scraper      → articles CNN      → Kafka topic 'news_articles'
-    BBC scraper      → articles BBC      → Kafka topic 'news_articles'
-    Hesport scraper  → articles Hesport  → Kafka topic 'news_articles'
+    The guardian scraper      -> articles The guardian      -> Kafka topic 'news_articles'
+    BBC scraper               -> articles BBC               -> Kafka topic 'news_articles'
+    Hespress scraper          -> articles Hespress          -> Kafka topic 'news_articles'
     etc....
     """
     # Initialisation

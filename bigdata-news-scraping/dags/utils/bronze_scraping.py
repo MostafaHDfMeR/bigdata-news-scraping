@@ -1,8 +1,9 @@
 """
 bronze_scraping.py — DAG Airflow : Scraping Batch (Couche Bronze)
-Sources  : CNN, BBC News, Hesport, Al Jazeera, NBC News, Reuters, Morocco World News
-Couche   : Bronze (données brutes JSON --> MinIO)
-Schedule : Toutes les heures
+Sources RSS  : The Guardian, BBC News, France 24, Al Jazeera, Arab News
+Sources HTML : Hespress, Goud.ma
+Couche       : Bronze (données brutes JSON → MinIO)
+Schedule     : Toutes les heures
 """
 
 import sys
@@ -12,63 +13,63 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-# Importer les 7 scrapers depuis scrapers.py
+# Importer les 7 scrapers mis à jour
 from utils.scrapers import (
-    CNNScraper,
+    TheGuardianScraper,
     BBCScraper,
-    HesportScraper,
+    LeMondeScraper,
     AlJazeeraScraper,
-    NBCNewsScraper,
-    ReutersScraper,
-    MoroccoWorldNewsScraper,
+    RFIScraper,
+    HespressRSSScraper,
+    EuronewsScraper,
 )
 
-# Importer le client MinIO pour sauvegarder en Bronze
 from utils.minio_client import save_json_to_bronze, init_all_buckets
 
-# CONFIGURATION PAR DÉFAUT DES TÂCHES
+# CONFIGURATION PAR DÉFAUT
 
 default_args = {
-    'owner': 'data_engineer',      # Responsable du DAG
-    'depends_on_past': False,       # Ne pas attendre le run précédent
-    'email_on_failure': False,      # Pas d'email en cas d'échec
-    'retries': 3,                   # Réessayer 3 fois si échec
-    'retry_delay': timedelta(minutes=5),  # Attendre 5 min entre chaque essai
+    'owner': 'data_engineer',
+    'depends_on_past': False,
+    'email_on_failure': False,
+    'retries': 3,
+    'retry_delay': timedelta(minutes=5),
 }
 
 # FONCTIONS DES TÂCHES
 
 def initialize_buckets(**context):
-    """
-    Tâche 0 : Vérifier que les 3 buckets MinIO existent.
-    S'exécute avant tous les scrapers.
-    Utilise init_all_buckets() de minio_client.py.
-    """
+
+    """Vérifier que les 3 buckets MinIO existent."""
+
     print("[Init] Vérification des buckets MinIO...")
     init_all_buckets()
     print("[Init] Buckets Bronze, Silver, Gold prêts.")
 
-def scrape_source(scraper_class, **context):
-    # Créer le scraper correspondant à la source
-    scraper = scraper_class()
 
+def scrape_source(scraper_class, **context):
+
+    """
+    Tâche générique de scraping.
+    1. Créer le scraper
+    2. Appeler scrape_articles()
+    3. Sauvegarder en JSON dans MinIO Bronze
+    4. Passer les infos via XCom
+    """
+
+    scraper = scraper_class()
     print(f"[{scraper.source_name}] Début du scraping...")
 
-    # Lancer le scraping
     articles = scraper.scrape_articles()
 
-    # Vérification qu'on a bien collecté des articles
     if not articles:
         raise ValueError(
             f"[{scraper.source_name}] Aucun article collecté ! "
-            f"Vérifier si le site est accessible."
+            f"Vérifier si le flux RSS ou le site est accessible."
         )
 
-    # Sauvegarder en JSON dans MinIO bucket Bronze
     path = save_json_to_bronze(articles, scraper.source_name)
 
-    # Passer les informations aux tâches suivantes via XCom
-    # XCom = système de communication entre tâches Airflow
     context['ti'].xcom_push(key='bronze_path', value=path)
     context['ti'].xcom_push(key='article_count', value=len(articles))
     context['ti'].xcom_push(key='source_name', value=scraper.source_name)
@@ -76,84 +77,90 @@ def scrape_source(scraper_class, **context):
     print(f"[OK] {len(articles)} articles de '{scraper.source_name}' → {path}")
     return f"{len(articles)} articles collectés depuis {scraper.source_name}"
 
+
 # DÉFINITION DU DAG
 
 with DAG(
     dag_id='01_bronze_scraping',
     default_args=default_args,
-    description='Scraping batch toutes les heures — CNN, BBC, Hesport, AlJazeera, NBC, Reuters, MWN',
-    schedule_interval=timedelta(hours=1),   # S'exécute toutes les heures
+    description=(
+        'Scraping batch toutes les heures — '
+        'Guardian, BBC, France24, AlJazeera, ArabNews, Hespress, Goud'
+    ),
+    schedule_interval=timedelta(hours=1),
     start_date=datetime(2026, 4, 13),
-    catchup=False,   # Ne pas rattraper les runs passés
+    catchup=False,
     tags=['bronze', 'scraping', 'batch'],
 ) as dag:
 
-    # ── Tâche 0 : Initialisation des buckets ────────────────────────────────
-    # S'exécute en premier avant tous les scrapers
+# Tâche 0 : Initialisation 
+    
     init_buckets = PythonOperator(
         task_id='init_minio_buckets',
         python_callable=initialize_buckets,
     )
 
-    # ── Tâche 1 : Scraping CNN ───────────────────────────────────────────────
-    scrape_cnn = PythonOperator(
-        task_id='scrape_cnn',
+# Tâche 1 : The Guardian (RSS)
+    
+    scrape_guardian = PythonOperator(
+        task_id='scrape_the_guardian',
         python_callable=scrape_source,
-        op_kwargs={'scraper_class': CNNScraper},
+        op_kwargs={'scraper_class': TheGuardianScraper},
     )
 
-    # ── Tâche 2 : Scraping BBC News ──────────────────────────────────────────
+# Tâche 2 : BBC News (RSS)
+    
     scrape_bbc = PythonOperator(
         task_id='scrape_bbc_news',
         python_callable=scrape_source,
         op_kwargs={'scraper_class': BBCScraper},
     )
 
-    # ── Tâche 3 : Scraping Hesport ───────────────────────────────────────────
-    scrape_hesport = PythonOperator(
-        task_id='scrape_hesport',
+# Tâche 3 : Le Monde (RSS) 
+
+    scrape_le_monde = PythonOperator(
+        task_id='scrape_le_monde',
         python_callable=scrape_source,
-        op_kwargs={'scraper_class': HesportScraper},
+        op_kwargs={'scraper_class': LeMondeScraper},
     )
 
-    # ── Tâche 4 : Scraping Al Jazeera ───────────────────────────────────────
+# Tâche 4 : Al Jazeera (RSS) 
+    
     scrape_aljazeera = PythonOperator(
         task_id='scrape_aljazeera',
         python_callable=scrape_source,
         op_kwargs={'scraper_class': AlJazeeraScraper},
     )
 
-    # ── Tâche 5 : Scraping NBC News ──────────────────────────────────────────
-    scrape_nbc = PythonOperator(
-        task_id='scrape_nbc_news',
+# Tâche 5 : RFI (RSS) 
+    
+    scrape_rfi = PythonOperator(
+        task_id='scrape_rfi',
         python_callable=scrape_source,
-        op_kwargs={'scraper_class': NBCNewsScraper},
+        op_kwargs={'scraper_class': RFIScraper},
     )
 
-    # ── Tâche 6 : Scraping Reuters ───────────────────────────────────────────
-    scrape_reuters = PythonOperator(
-        task_id='scrape_reuters',
+# Tâche 6 : Hespress (RSS) 
+    
+    scrape_hespress = PythonOperator(
+        task_id='scrape_hespress',
         python_callable=scrape_source,
-        op_kwargs={'scraper_class': ReutersScraper},
+        op_kwargs={'scraper_class': HespressRSSScraper},
     )
 
-    # ── Tâche 7 : Scraping Morocco World News ───────────────────────────────
-    scrape_mwn = PythonOperator(
-        task_id='scrape_morocco_world_news',
+# Tâche 7 : Euronews (RSS) 
+    
+    scrape_euronews = PythonOperator(
+        task_id='scrape_euronews',
         python_callable=scrape_source,
-        op_kwargs={'scraper_class': MoroccoWorldNewsScraper},
+        op_kwargs={'scraper_class': EuronewsScraper},
     )
-
-    # ── Ordre d'exécution ────────────────────────────────────────────────────
-    # init_buckets s'exécute EN PREMIER
-    # puis les 7 scrapers s'exécutent EN PARALLÈLE
-
     init_buckets >> [
-        scrape_cnn,
+        scrape_guardian,
         scrape_bbc,
-        scrape_hesport,
+        scrape_le_monde,
         scrape_aljazeera,
-        scrape_nbc,
-        scrape_reuters,
-        scrape_mwn,
+        scrape_rfi,
+        scrape_hespress,
+        scrape_euronews,
     ]

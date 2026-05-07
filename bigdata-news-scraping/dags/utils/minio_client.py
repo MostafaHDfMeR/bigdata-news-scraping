@@ -1,5 +1,5 @@
 """
-Sources  : CNN, BBC News, Hesport, Al Jazeera, NBC News, Reuters, Morocco World News
+Sources  : The guardian, BBC News, Hespress, Al Jazeera, france24, goud, Arab News
 Couches  : Bronze (JSON), Silver (Parquet), Gold (Parquet)
 """
 
@@ -24,13 +24,13 @@ BUCKETS = ["bronze", "silver", "gold"]
 
 # Les 7 sources valides — correspondent aux classes dans scrapers.py
 VALID_SOURCES = [
-    "cnn",
+    "the_guardian",
     "bbc_news",
-    "hesport",
+    "le_monde",
     "aljazeera",
-    "nbc_news",
-    "reuters",
-    "morocco_world_news",
+    "rfi",
+    "hespress ",
+    "euronews",
 ]
 
 # CONNEXION
