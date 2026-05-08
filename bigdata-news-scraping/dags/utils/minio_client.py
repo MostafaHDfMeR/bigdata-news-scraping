@@ -29,7 +29,7 @@ VALID_SOURCES = [
     "le_monde",
     "aljazeera",
     "rfi",
-    "hespress ",
+    "hespress",
     "euronews",
 ]
 
