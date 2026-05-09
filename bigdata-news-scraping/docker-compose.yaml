@@ -81,6 +81,20 @@ services:
       interval: 10s
       retries: 5
 
+  #pgadmin (interface web pour PostgreSQL)
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres_dw
+    networks:
+      - bigdata_net
+
   #Redis (broker Celery pour Airflow)
   redis:
     image: redis:7.2-bookworm
